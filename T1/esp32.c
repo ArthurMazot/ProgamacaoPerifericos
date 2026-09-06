@@ -4,8 +4,10 @@ const char comm[3][6] = {0x01, 0x04, 0x00, 0x01, 0x00, 0x01,  // Temperatura [0]
                          0x01, 0x04, 0x00, 0x02, 0x00, 0x01,  // Umidade [1]
                          0x01, 0x04, 0x00, 0x01, 0x00, 0x02}; // Temperatura e umidade [2]
 
+const uint8_t resp_size[3] = {7, 7, 9}; // tamanho das mensagens recebidas do sensor
+
 char msg_tx[8] = {};
-char msg_rx[8] = {};
+char msg_rx[9] = {};
 
 //==========================================//
 
@@ -30,8 +32,22 @@ void loop(){
     calculateCRC((unsigned char *)msg_tx, 6); // calcula o CRC da mensagem de resposta
 
     // enviar a mensagem para o sensor
+    // receber a mensagem do sensor
+    // Verificar o CRC da mensagem recebida (Descobrir se tem que fazer, se sim como fazer)
 
+    uint16_t high_low = 0;
+    //Provavelmente tem que mudar
+    if(resp == 1 || resp == 0){
+      high_low = (msg_rx[3] << 8) | msg_rx[4];//Temperatura ou Umidade
+      Serial.write(high_low); // Dividir por 10 no front
+    }
 
+    else if(resp == 2){
+      high_low = (msg_rx[3] << 8) | msg_rx[4]; //Temperatura
+      Serial.write(high_low); // Dividir por 10 no front
+      high_low = (msg_rx[5] << 8) | msg_rx[6]; //Umidade
+      Serial.write(high_low); // Dividir por 10 no front
+    }
 
 }
 
