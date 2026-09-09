@@ -19,6 +19,7 @@ void setup(){
 //==========================================//
 
 void loop(){
+    uint16_t crc = 0;
     uint8_t resp = 0;
     while(resp == 0) resp = getResp(); 
 
@@ -29,11 +30,17 @@ void loop(){
     for(int i = 0; i < 6; i++) // coloca a mensagem de resposta no buffer de envio
             msg_tx[i] = comm[resp][i];
         
-    calculateCRC((unsigned char *)msg_tx, 6); // calcula o CRC da mensagem de resposta
-
+    crc = calculateCRC((unsigned char *)msg_tx, 6); // calcula o CRC da mensagem de resposta
+    msg_tx[6] = (crc && 0xFF00) >> 8; //Parte alta
+    msg_tx[7] = crc && 0xFF; //Parte baixa
+  
     // enviar a mensagem para o sensor
     // receber a mensagem do sensor
-    // Verificar o CRC da mensagem recebida (Descobrir se tem que fazer, se sim como fazer)
+    
+    crc = calculateCRC((unsigned char *)msg_tx, resp_size[resp] - 2);// -2 porque são os 2 bytes do crc
+    if(!((msg_tx[resp_size[resp] - 2] == (crc && 0xFF00) >> 8) && (msg_tx[resp_size[resp] - 1] == crc && 0xFF))){ //Se a parte alta ou a parte baixa do crc forem diferentes das recebidas
+      //Mensagem tem erro repitir o envio
+    }
 
     uint16_t high_low = 0;
     //Provavelmente tem que mudar
@@ -64,7 +71,7 @@ uint8_t getResp(){ // pega a resposta do front pela serial
 
 //==========================================//
 
-void calculateCRC(unsigned char *frame, int tamanho) { // Função pega do aquivo .c disponibilizado pelo professor
+uint16_t calculateCRC(unsigned char *frame, int tamanho) { // Função pega do aquivo .c disponibilizado pelo professor
   unsigned int crc = 0xFFFF;            // Initialize CRC to 0xFFFF
   for (int n = 0; n < tamanho; n++) {
     crc ^= frame[n];                    // XOR the frame byte with the CRC
@@ -77,6 +84,5 @@ void calculateCRC(unsigned char *frame, int tamanho) { // Função pega do aquiv
       }
     }
   }
-  msg_tx[7] = (crc >> 8) & 0xFF;     // Separando a parte alta do CRC  
-  msg_tx[6] = crc & 0xFF;
+  return crc;
 }
