@@ -14,7 +14,8 @@ def getData():
     global ser
     while True:
         if ser.in_waiting > 0:
-            data = ser.readline().decode('utf-8').strip() #Pega uma string no serial
+            data = ser.readline().decode('utf-8').strip()  
+            print(f"Recebido: {data}")  
             break
     return data
 
@@ -39,7 +40,7 @@ def getTempUmid():
     ser.write(b'2') #Escreve na serial
     time.sleep(2)
     data = getData()
-    #Tratar 'data' (Separar temp de umid e dividir por 10)
+    ##Tratar 'data' (Separar temp de umid e dividir por 10)
     temp = 0 #mudar
     umid = 0 #mudar
     return temp, umid
@@ -52,6 +53,7 @@ def fun_connButton():
     global conn
     if(conn == False):
         ser = serial.Serial('COM3', 9600)
+        time.sleep(2)
         print("Conectado")
         conn = True
     else:
@@ -98,3 +100,6 @@ janela.tempUmidButton.clicked.connect(fun_tempUmidButton)
 
 janela.show()
 app.exec_()
+
+if conn == True:
+    ser.close()
