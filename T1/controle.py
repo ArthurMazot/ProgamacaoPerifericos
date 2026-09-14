@@ -9,13 +9,14 @@ import time
 global ser  #Serial
 global conn #Flag para conecção serial
 
-#Talvez tenha que mudar
+#Sophia -> Corrigido comunicação, e estágio inicial
+
 def getData():
     global ser
     while True:
         if ser.in_waiting > 0:
-            data = ser.readline().decode('utf-8').strip()  
-            print(f"Recebido: {data}")  
+            data = ser.readline().decode('utf-8').strip()
+            print(f"Recebido: {data}")
             break
     return data
 
@@ -24,7 +25,7 @@ def getTemp():
     ser.write(b'0') #Escreve na serial
     time.sleep(2)
     data = getData()
-    #Tratar 'data' (dividir por 10)
+    data = int(data) / 10
     return data
 
 def getUmid():
@@ -32,7 +33,7 @@ def getUmid():
     ser.write(b'1') #Escreve na serial
     time.sleep(2)
     data = getData()
-    #Tratar 'data' (dividir por 10)
+    data = int(data) / 10
     return data
 
 def getTempUmid():
@@ -40,22 +41,29 @@ def getTempUmid():
     ser.write(b'2') #Escreve na serial
     time.sleep(2)
     data = getData()
-    ##Tratar 'data' (Separar temp de umid e dividir por 10)
-    temp = 0 #mudar
-    umid = 0 #mudar
+
+    temp, umid = data.split(':')
+
+    temp = int(temp) / 10
+    umid = int(umid) / 10
+
     return temp, umid
 
-##=============================================================##
 
 #Funções dos botões
 def fun_connButton():
     global ser
     global conn
+
+
+# Atenção !!! Porta Serial depende do PC, verificar USB
+# Linux -> lsusb
     if(conn == False):
-        ser = serial.Serial('COM3', 9600)
+        ser = serial.Serial('COM9', 9600)
         time.sleep(2)
         print("Conectado")
         conn = True
+
     else:
         ser.close()
         print("Desconectado")
@@ -63,32 +71,41 @@ def fun_connButton():
 
 def fun_tempButton():
     global conn
+
     if(conn == True):
         print("Temperatura")
         temp = getTemp()
         janela.tempDisp.display(temp)
-    else: print('Sem Conecção')
-        
+
+    else:
+        print('Sem Conecção')
+
 def fun_umidButton():
     global conn
+
     if(conn == True):
         print("Umidade")
         umid = getUmid()
-        janela.umidDisp.setValue(umid)
-    else: print('Sem Conecção')
-        
+        janela.umidDisp.setValue(int(umid))
+
+    else:
+        print('Sem Conecção')
+
 def fun_tempUmidButton():
     global conn
+
     if(conn == True):
         print("Temperatura / Umidade")
         temp, umid = getTempUmid()
-        temp = 0
-        umid = 0
+
         janela.tempDisp.display(temp)
-        janela.umidDisp.setValue(umid)
-    else: print('Sem Conecção')
+        janela.umidDisp.setValue(int(umid))
+
+    else:
+        print('Sem Conecção')
 
 conn = False
+
 app = QtWidgets.QApplication([])
 janela = uic.loadUi("interface.ui")
 
