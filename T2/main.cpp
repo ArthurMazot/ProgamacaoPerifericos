@@ -14,8 +14,11 @@
   - Não entendi se o ESP pode funcionar com subcriber e publisher ao mesmo tempo, mas está 
   comentado ao lado de qual função é para o ESP funcionar como publisher e qual é para funcionar 
   como subscriber.
-  - Falta implementar as funções dos componentes, e colocar elas no loop().
   - Dos slides do Terroso, falta a parte do BotTelegram e o "Configurando esp32 como ap ou sta".
+  - Falta implementar algumas das funções dos componentes, e colocar elas no loop().
+  - Definir se os botões serão pull-up ou pull-down e alterar as funções dos botões.
+  - Implementar a dunção geradorDeSinais().
+  - Definir os pinos do LCD e suas funções.
 */
 
 //(Começo) Defines
@@ -65,9 +68,9 @@
 
   //(Começo) Componentes
   void buzzer();
-  void botaoPanico();
-  void botaoQueda();
-  void geradorDeSinais();
+  char botaoPanico();
+  char botaoQueda();
+  int geradorDeSinais();
   //(Fim) Componentes
 //(Fim) Definições de funções
 
@@ -89,6 +92,10 @@
   const char* mqtt_broker = "broker.emqx.io";
   const int mqtt_port = 1883;
   //(Fim) MQTT
+
+  //(Começo) Componentes
+  char alerta = 0; //Ativar ou desativar o buzzer
+  //(Fim) Componentes
 //(Fim) Variáveis globais
 
 void setup() {
@@ -138,7 +145,18 @@ void loop() {
   //(Fim) MQTT
 
   //(Começo) Componentes
+  //Os alertas em [1, 2, 3] seriam para diferencia o que colocar no LCD, mas não sei se
+  //vai funcionar dessa forma
+  if(botaoPanico() != 0) alerta = 1;
+  if(botaoQueda() != 0) alerta = 2;
 
+  int freq = geradorDeSinais();
+  if(freq < 50 || freq > 100) alerta = 3;
+
+  if(alerta != 0){
+    buzzer();
+    alerta = 0;
+  }
   //(Fim) Componentes
 }
 
@@ -201,4 +219,28 @@ void loop() {
     Serial.println("-----------------------");
   }
   //(Fim) MQTT
+
+  //(Começo) Componentes
+  void buzzer(){
+    digitalWrite(pino_buzzer, HIGH);
+    delay(500);
+    digitalWrite(pino_buzzer, LOW);
+    delay(500);
+  }
+
+  char botaoPanico(){
+    return digitalRead(pino_botao_panico) != LOW;
+  }
+
+  char botaoQueda(){
+    return digitalRead(pino_botao_queda) != LOW;
+  }
+
+  int geradorDeSinais(){
+    //Essa função tem que retornar a frequencia da entrada
+    //Procurar se existe uma função pronta na interface Arduino
+    //ou implementar ;-;
+    //return ????
+  }
+  //(Fim) Componentes
 //(Fim) Funções
