@@ -1,246 +1,157 @@
+#include <Arduino.h>
+#include <LiquidCrystal.h>
+#include <DHT.h>
 #include <TinyGPS++.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include "DHT.h"
 
-/*
- ***ATENÇÂO MÁXIMA***
- NADA FOI TESTADO
+/* Monitor de batimentos e queda - ESP32-C3-DevKitM-1
+ * LCD: VSS, RW e K no GND; VDD e A (com 220 ohm) no 5V; V0 no cursor de um pot. de 10k; D0 a D3 soltos.
+ * Botões e buzzer ativo: um lado no pino, o outro no GND. DHT22: pull-up de 10k entre DATA e 3.3V.
+ * Gerador de sinais: onda quadrada de 0 a 3.3V no SINAL_BATIMENTO (resistor de 1k em série).
+ * GPS NEO-6M: VCC em 3.3V, GND, TX do GPS no GPS_RX e RX do GPS no GPS_TX (cruzado). */
 
- Atenções:
-  - Implementar as funções getLatDesntino() e getLngDestino() para retornar a latitude e 
-  longitude do destino.
-  - Função callback() -> Ler o comentário a cima da função.
-  - Não entendi se o ESP pode funcionar com subcriber e publisher ao mesmo tempo, mas está 
-  comentado ao lado de qual função é para o ESP funcionar como publisher e qual é para funcionar 
-  como subscriber.
-  - Dos slides do Terroso, falta a parte do BotTelegram e o "Configurando esp32 como ap ou sta".
-  - Falta implementar algumas das funções dos componentes, e colocar elas no loop().
-  - Definir se os botões serão pull-up ou pull-down e alterar as funções dos botões.
-  - Implementar a dunção geradorDeSinais().
-  - Definir os pinos do LCD e suas funções.
-*/
+#define WIFI_SSID      "Netvirtua801"            // WiFi de 2.4 GHz
+#define WIFI_SENHA     "pingoebombom"
+#define MQTT_BROKER    "broker.emqx.io"          // broker público, porta 1883
+#define MQTT_ID        "AS_ESP32"   // troque por algo seu: precisa ser único no broker
+#define TOPICO         "AS_Topicos"   // prefixo dos tópicos: troque por algo seu
+#define INTERVALO_MQTT 5000                      // ms entre os envios
+#define TEMPO_AVISO    5000                     // ms que um evento ou o GPS ficam no LCD
 
-//(Começo) Defines
-  //(Começo) GPS
-  #define GPS_RX 20 //Tx do GPS
-  #define GPS_TX 21 //Rx do GPS
+#define LCD_RS          1
+#define LCD_E           3
+#define LCD_D4          4
+#define LCD_D5          5
+#define LCD_D6          6
+#define LCD_D7          7
+#define BOTAO_QUEDA     8
+#define BOTAO_PANICO    9
+#define DHT_DADOS       2
+#define BUZZER          0
+#define SINAL_BATIMENTO 10
+#define GPS_RX          20
+#define GPS_TX          21
 
-  //Esses defines não devem existir, mas no momento eu não sei daonde vão vir essas informações
-  #define LATITUDE -30.123456 // Latitude de referência (Santa Maria)
-  #define LONGITUDE -51.654321 // Longitude de referência (Santa Maria)
-  //(Fim) GPS
+LiquidCrystal lcd(LCD_RS, LCD_E, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
+DHT dht(DHT_DADOS, DHT22);
+TinyGPSPlus gps;
+WiFiClient wifi;
+PubSubClient mqtt(wifi);
 
-  //(Começo) MQTT
-  #define DHTPIN 19 //Pino de dados do sensor DHT
+volatile unsigned long ultima = 0;    // micros() da última batida
+volatile unsigned long periodo = 0;   // tempo entre as duas últimas batidas (us)
+int bpm = 0;
+int estado = 0;                       // 0 = normal, 1 = bradicardia, 2 = taquicardia, 3 = sem pulso
+const char *nomes[] = {"NORMAL", "BRADICARDIA", "TAQUICARDIA", "SEM PULSO"};
+unsigned long avisoEm = 0;            // millis() do último aviso no LCD (evento ou GPS)
 
-  //Definições dos tópicos de publicação, provavelmente terão mais
-  //AS de Artur e Sofia, mas se quiser colocar mais um S pra ficar ASS, pode colocar
-  #define MQTT_ID "AS_esp32" //Nosso ID
-  #define topico_pub_temp "AS/Temp"
-  //(Fim) MQTT
+void IRAM_ATTR batida() {
+  unsigned long agora = micros();
+  if (ultima) periodo = agora - ultima;   // a primeira batida só marca o tempo
+  ultima = agora;
+}
 
+void buzzerBip(int t) {
+  digitalWrite(BUZZER, HIGH);
+  delay(t);
+  digitalWrite(BUZZER, LOW);
+  delay(t);
+}
 
-  //(Começo) componentes
-  #define pino_buzzer 18
-  #define pino_botao_panico 17
-  #define pino_botao_queda 16
-  #define pino_gerador_de_sinais 15
-  //(Fim) componentes
-//(Fim) Defines
-
-
-
-//(Começo) Definições de funções
-  //(Começo) GPS
-  double getLatDesntino(); //Retorna a latitude do destino
-  double getLngDestino(); //Retorna a longitude do destino
-  double getDistance(); //Retorna a distância entre a posição atual e o destino em metros
-  //(Fim) GPS
-
-  //(Começo) MQTT
-  void conectaWifi();
-  void conectaBroker();
-
-  void publicaDados(); //ESP com Publisher
-  void callback(char *topico, byte *msg, unsigned int tamanho); //ESP com Subscriber
-  //(Fim) MQTT
-
-  //(Começo) Componentes
-  void buzzer();
-  char botaoPanico();
-  char botaoQueda();
-  int geradorDeSinais();
-  //(Fim) Componentes
-//(Fim) Definições de funções
-
-//(Começo) Variáveis globais
-  //(Começo) GPS
-  HardwareSerial GPSserial(1);
-  TinyGPSPlus gps;
-  //(Fim) GPS
-
-  //(Começo) MQTT
-  DHT dht(DHTPIN, DHT22);
-
-  WiFiClient espClient;
-  PubSubClient MQTT(espClient);
-
-  static long long tempo=0;
-  const char* ssid = "mototerroso"; //Mudar para o nosso wifi
-  const char* password = "0123456789"; //Mudar para a senha do nosso wifi
-  const char* mqtt_broker = "broker.emqx.io";
-  const int mqtt_port = 1883;
-  //(Fim) MQTT
-
-  //(Começo) Componentes
-  char alerta = 0; //Ativar ou desativar o buzzer
-  //(Fim) Componentes
-//(Fim) Variáveis globais
+// Evento: publica no broker, mostra no LCD e apita
+void evento(const char *nome, int bip) {
+  mqtt.publish(TOPICO "/evento", nome);
+  lcd.clear();
+  lcd.print("EVENTO:");
+  lcd.setCursor(0, 1);
+  lcd.print(nome);
+  buzzerBip(bip);
+  avisoEm = millis();
+}
 
 void setup() {
-  pinMode(pino_buzzer, OUTPUT);
-  pinMode(pino_botao_panico, INPUT);
-  pinMode(pino_botao_queda, INPUT);
-  pinMode(pino_gerador_de_sinais, INPUT);
+  // LCD
+  lcd.begin(16, 2);
 
-  Serial.begin(115200);
-  GPSserial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
+  // Botões e buzzer
+  pinMode(BOTAO_QUEDA, INPUT_PULLUP);
+  pinMode(BOTAO_PANICO, INPUT_PULLUP);
+  pinMode(BUZZER, OUTPUT);
+
+  // DHT22
   dht.begin();
-  conectaWifi();
-  MQTT.setServer(mqtt_broker, mqtt_port);
-  MQTT.setCallback(callback); //ESP como Subscriber
-  conectaBroker();
-  delay(1000);
+
+  // Sinal dos batimentos (pull-down: pino solto = sem pulso)
+  pinMode(SINAL_BATIMENTO, INPUT_PULLDOWN);
+  attachInterrupt(digitalPinToInterrupt(SINAL_BATIMENTO), batida, RISING);
+
+  // GPS (o NEO-6M já transmite a 9600 baud)
+  Serial1.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
+
+  // WiFi (espera conectar) e broker MQTT
+  lcd.print("Conectando WiFi");
+  WiFi.begin(WIFI_SSID, WIFI_SENHA);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+  mqtt.setServer(MQTT_BROKER, 1883);
+  lcd.clear();
+  lcd.print("Monitor ativo");
 }
 
 void loop() {
-  //(Começo) GPS
-    while (GPSserial.available() > 0){
-      gps.encode(GPSserial.read());
-    }
+  // Batimentos: abaixo de 20 bpm ou 3 s sem batida = sem pulso (bpm 0)
+  bpm = periodo ? round(60000000.0 / periodo) : 0;   // periodo em us: 60 s / periodo = bpm
+  if (bpm < 20 || micros() - ultima > 3000000UL) bpm = 0;
+  estado = bpm == 0 ? 3 : bpm < 60 ? 1 : bpm > 100 ? 2 : 0;
 
-    double distance = 0;
-    static unsigned long lastUpdate = 0;
-    if (millis() - lastUpdate > 1000){
-      lastUpdate = millis();
-      if(gps.location.isValid())
-        distance = getDistance();
-    }
-  //(Fim) GPS
-
-  //(Começo) BotTelegram
-    //Não sei o que vai vir aqui no momento
-  //(Fim) BotTelegram
-
-  //(Começo) MQTT
-    static long long pooling = 0;
-    if(WiFi.status() != WL_CONNECTED) conectaWifi();
-    if(!MQTT.connected()) conectaBroker();
-    if(millis() - pooling > 10000){
-      pooling = millis();
-      publicaDados();
-    }
-    MQTT.loop();
-  //(Fim) MQTT
-
-  //(Começo) Componentes
-  //Os alertas em [1, 2, 3] seriam para diferencia o que colocar no LCD, mas não sei se
-  //vai funcionar dessa forma
-  if(botaoPanico() != 0) alerta = 1;
-  if(botaoQueda() != 0) alerta = 2;
-
-  int freq = geradorDeSinais();
-  if(freq < 50 || freq > 100) alerta = 3;
-
-  if(alerta != 0){
-    buzzer();
-    alerta = 0;
+  // Evento de batimento: ao entrar em bradicardia, taquicardia ou sem pulso
+  static int estadoAnterior = 3;   // começa em "sem pulso" para não avisar ao ligar
+  if (estado != estadoAnterior) {
+    estadoAnterior = estado;
+    if (estado) evento(nomes[estado], 200);
   }
-  //(Fim) Componentes
+
+  // Botões
+  if (!digitalRead(BOTAO_QUEDA)) evento("QUEDA", 100);
+  if (!digitalRead(BOTAO_PANICO)) evento("PANICO", 300);
+
+  // GPS: alimenta o decodificador com o que chegou na serial
+  while (Serial1.available()) gps.encode(Serial1.read());
+
+  // LCD: evento e GPS (1 vez por minuto) ficam TEMPO_AVISO na tela; no resto do tempo mostra o bpm
+  static unsigned long ultimoGps = 0;
+  if (millis() - avisoEm > TEMPO_AVISO) {
+    if (millis() - ultimoGps > 60000) {
+      ultimoGps = avisoEm = millis();
+      lcd.clear();
+      if (gps.location.isValid()) {
+        lcd.printf("Lat: %.5f", gps.location.lat());
+        lcd.setCursor(0, 1);
+        lcd.printf("Lon: %.5f", gps.location.lng());
+      } else lcd.print("GPS sem sinal");
+    } else {
+      lcd.setCursor(0, 0);
+      lcd.printf("BPM: %-11d", bpm);
+      lcd.setCursor(0, 1);
+      lcd.printf("%-16s", nomes[estado]);
+    }
+  }
+
+  // MQTT: tenta reconectar a cada 5 s se caiu e mantém a conexão ativa
+  static unsigned long tentativa = 0;
+  if (!mqtt.connected() && millis() - tentativa > 5000) {
+    tentativa = millis();
+    mqtt.connect(MQTT_ID);
+  }
+  mqtt.loop();
+
+  // Envio periódico: bpm, temperatura e posição do GPS
+  static unsigned long ultimoEnvio = 0;
+  if (millis() - ultimoEnvio > INTERVALO_MQTT) {
+    ultimoEnvio = millis();
+    mqtt.publish(TOPICO "/bpm", String(bpm).c_str());
+    mqtt.publish(TOPICO "/temperatura", String(dht.readTemperature(), 1).c_str());
+    mqtt.publish(TOPICO "/gps", gps.location.isValid() ?
+                 (String(gps.location.lat(), 6) + "," + String(gps.location.lng(), 6)).c_str() : "sem sinal");
+  }
 }
-
-//(Começo) Funções
-  //(Começo) GPS
-  double getLatDesntino() {
-    //return ????
-  }
-
-  double getLngDestino() {
-    //return ????
-  }
-
-  double getDistance(){ //Retorna a distância entre a posição atual e o destino em metros
-    double LatDestino = LATITUDE;  //Trocar pela função getLatDesntino()
-    double LngDestino = LONGITUDE; //Trocar pela função getLngDestino()
-    return TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), LatDestino, LngDestino);
-  }
-  //(Fim) GPS
-
-  //(Começo) MQTT
-  //Funções fornecidas pelo Terroso, não mexer
-  void conectaWifi(){
-    Serial.println("Conectando a rede wifi!");
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED){
-      delay(500);
-      Serial.println("Conectando a rede wifi....");
-    }
-  Serial.println("Conectado a rede wifi com sucesso!!!");
-  }
-
-  void conectaBroker(){
-    while(!MQTT.connected()) {
-      if (MQTT.connect(MQTT_ID))
-        Serial.println("Conectado ao Broker!");
-
-      else {
-        Serial.print("Falha na conexão. O status é: ");
-        Serial.print(MQTT.state());
-        delay(2000);
-      }
-    }
-  }
-  void publicaDados(){ //Todos os topicos de publicação devem ser chamados aqui dentro
-    float temp = dht.readTemperature(); 
-    MQTT.publish(topico_pub_temp, String(temp).c_str());
-  }
-
-  //(callBack) Não entendi se essa função é só para printar no terminal ou se tem 
-  //que retornar alguma coisa, então por enquanto só vai printar no terminal
-  void callback(char *topico, byte *msg, unsigned int tamanho){
-    Serial.print("Mensagem recebida do topico ");
-    Serial.println(topico);
-    Serial.print("Mensagem: ");
-    for (int i = 0; i < tamanho; i++) 
-      Serial.print((char) msg[i]);
-
-    Serial.println();
-    Serial.println("-----------------------");
-  }
-  //(Fim) MQTT
-
-  //(Começo) Componentes
-  void buzzer(){
-    digitalWrite(pino_buzzer, HIGH);
-    delay(500);
-    digitalWrite(pino_buzzer, LOW);
-    delay(500);
-  }
-
-  char botaoPanico(){
-    return digitalRead(pino_botao_panico) != LOW;
-  }
-
-  char botaoQueda(){
-    return digitalRead(pino_botao_queda) != LOW;
-  }
-
-  int geradorDeSinais(){
-    //Essa função tem que retornar a frequencia da entrada
-    //Procurar se existe uma função pronta na interface Arduino
-    //ou implementar ;-;
-    //return ????
-  }
-  //(Fim) Componentes
-//(Fim) Funções
