@@ -5,19 +5,17 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 
-/* Monitor de batimentos e queda - ESP32-C3-DevKitM-1
- * LCD: VSS, RW e K no GND; VDD e A (com 220 ohm) no 5V; V0 no cursor de um pot. de 10k; D0 a D3 soltos.
- * Botões e buzzer ativo: um lado no pino, o outro no GND. DHT22: pull-up de 10k entre DATA e 3.3V.
- * Gerador de sinais: onda quadrada de 0 a 3.3V no SINAL_BATIMENTO (resistor de 1k em série).
- * GPS NEO-6M: VCC em 3.3V, GND, TX do GPS no GPS_RX e RX do GPS no GPS_TX (cruzado). */
+//==============================================================//
+//                          Defines                             //
+//==============================================================//
 
-#define WIFI_SSID      "Netvirtua801"            // WiFi de 2.4 GHz
-#define WIFI_SENHA     "pingoebombom"
-#define MQTT_BROKER    "broker.emqx.io"          // broker público, porta 1883
-#define MQTT_ID        "AS_ESP32"   // troque por algo seu: precisa ser único no broker
-#define TOPICO         "AS_Topicos"   // prefixo dos tópicos: troque por algo seu
-#define INTERVALO_MQTT 5000                      // ms entre os envios
-#define TEMPO_AVISO    5000                     // ms que um evento ou o GPS ficam no LCD
+#define WIFI_SSID      "Netvirtua801"   //Nome da rede
+#define WIFI_SENHA     "pingoebombom"   //Senha da rede
+#define MQTT_BROKER    "broker.emqx.io"
+#define MQTT_ID        "AS_ESP32"       //AS de Artur e Sofia
+#define TOPICO         "AS_Topicos"     //Se quiser colocar um S a mais pra ficar ASS, pode colocar
+#define INTERVALO_MQTT 5000             //Tempo de publicação no broker
+#define TEMPO_AVISO    5000             //Tempo que o aviso fica no LCD
 
 #define LCD_RS          1
 #define LCD_E           3
@@ -33,96 +31,115 @@
 #define GPS_RX          20
 #define GPS_TX          21
 
+//==============================================================//
+//                      Variaveis globais                       //
+//==============================================================//
+
 LiquidCrystal lcd(LCD_RS, LCD_E, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
 DHT dht(DHT_DADOS, DHT22);
 TinyGPSPlus gps;
 WiFiClient wifi;
 PubSubClient mqtt(wifi);
 
-volatile unsigned long ultima = 0;    // micros() da última batida
-volatile unsigned long periodo = 0;   // tempo entre as duas últimas batidas (us)
+volatile unsigned long ultima = 0;    //Micros() da última batida
+volatile unsigned long periodo = 0;   //Tempo entre as duas últimas batidas (us)
 int bpm = 0;
-int estado = 0;                       // 0 = normal, 1 = bradicardia, 2 = taquicardia, 3 = sem pulso
+int estado = 0;                       //0 = normal, 1 = bradicardia, 2 = taquicardia, 3 = sem pulso
 const char *nomes[] = {"NORMAL", "BRADICARDIA", "TAQUICARDIA", "SEM PULSO"};
-unsigned long avisoEm = 0;            // millis() do último aviso no LCD (evento ou GPS)
+unsigned long tempoAviso = 0;            //Tempo em que o aviso está na tela
 
-void IRAM_ATTR batida() {
+//==============================================================//
+//                          Funções                             //
+//==============================================================//
+
+void IRAM_ATTR batida(){ //Função que é chamada pela a interrupção
   unsigned long agora = micros();
-  if (ultima) periodo = agora - ultima;   // a primeira batida só marca o tempo
+  if (ultima) periodo = agora - ultima;
   ultima = agora;
 }
 
-void buzzerBip(int t) {
+void buzzerBip(int t){ //Ativa um ciclo do buzzer
   digitalWrite(BUZZER, HIGH);
   delay(t);
   digitalWrite(BUZZER, LOW);
   delay(t);
 }
 
-// Evento: publica no broker, mostra no LCD e apita
-void evento(const char *nome, int bip) {
+void evento(const char *nome, int bip){ //Publica o evento no broker, mostra no LCD e ativa o buzzer
   mqtt.publish(TOPICO "/evento", nome);
   lcd.clear();
   lcd.print("EVENTO:");
   lcd.setCursor(0, 1);
   lcd.print(nome);
   buzzerBip(bip);
-  avisoEm = millis();
+  tempoAviso = millis();
 }
 
+//==============================================================//
+//                           setup                              //
+//==============================================================//
+
 void setup() {
-  // LCD
+  //LCD
   lcd.begin(16, 2);
 
-  // Botões e buzzer
+  //Botões e buzzer
   pinMode(BOTAO_QUEDA, INPUT_PULLUP);
   pinMode(BOTAO_PANICO, INPUT_PULLUP);
   pinMode(BUZZER, OUTPUT);
 
-  // DHT22
+  //DHT22
   dht.begin();
 
-  // Sinal dos batimentos (pull-down: pino solto = sem pulso)
+  //Sinal dos batimentos (pull-down: pino solto = sem pulso)
   pinMode(SINAL_BATIMENTO, INPUT_PULLDOWN);
-  attachInterrupt(digitalPinToInterrupt(SINAL_BATIMENTO), batida, RISING);
 
-  // GPS (o NEO-6M já transmite a 9600 baud)
+  //Define o pino que gera a interrupção, a função "batida" é chamada toda vez que o pino detectar um "RISING"
+  attachInterrupt(digitalPinToInterrupt(SINAL_BATIMENTO), batida, RISING);
+  //GPS
   Serial1.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
 
-  // WiFi (espera conectar) e broker MQTT
+  //WiFi (espera conectar) e broker MQTT
   lcd.print("Conectando WiFi");
   WiFi.begin(WIFI_SSID, WIFI_SENHA);
   while (WiFi.status() != WL_CONNECTED) delay(500);
+
+  //MQTT
   mqtt.setServer(MQTT_BROKER, 1883);
+
   lcd.clear();
   lcd.print("Monitor ativo");
 }
 
+//==============================================================//
+//                            loop                              //
+//==============================================================//
+
 void loop() {
-  // Batimentos: abaixo de 20 bpm ou 3 s sem batida = sem pulso (bpm 0)
-  bpm = periodo ? round(60000000.0 / periodo) : 0;   // periodo em us: 60 s / periodo = bpm
+  //Batimentos abaixo de 20 bpm ou 3s sem batida = sem pulso (bpm 0)
+  bpm = periodo ? round(60000000.0 / periodo) : 0;  //Periodo em us: 60s / periodo = bpm
   if (bpm < 20 || micros() - ultima > 3000000UL) bpm = 0;
   estado = bpm == 0 ? 3 : bpm < 60 ? 1 : bpm > 100 ? 2 : 0;
 
-  // Evento de batimento: ao entrar em bradicardia, taquicardia ou sem pulso
-  static int estadoAnterior = 3;   // começa em "sem pulso" para não avisar ao ligar
+  //Evento de batimento ao entrar em bradicardia, taquicardia ou sem pulso
+  static int estadoAnterior = 3;   //Começa em "sem pulso" para não avisar ao ligar
   if (estado != estadoAnterior) {
     estadoAnterior = estado;
     if (estado) evento(nomes[estado], 200);
   }
 
-  // Botões
+  //Botões
   if (!digitalRead(BOTAO_QUEDA)) evento("QUEDA", 100);
   if (!digitalRead(BOTAO_PANICO)) evento("PANICO", 300);
 
-  // GPS: alimenta o decodificador com o que chegou na serial
+  //Lê do GPS todos os bytes disponiveis
   while (Serial1.available()) gps.encode(Serial1.read());
 
-  // LCD: evento e GPS (1 vez por minuto) ficam TEMPO_AVISO na tela; no resto do tempo mostra o bpm
+  //Eventos e GPS ficam TEMPO_AVISO no LCD, no resto do tempo mostra o bpm
   static unsigned long ultimoGps = 0;
-  if (millis() - avisoEm > TEMPO_AVISO) {
+  if (millis() - tempoAviso > TEMPO_AVISO) {
     if (millis() - ultimoGps > 60000) {
-      ultimoGps = avisoEm = millis();
+      ultimoGps = tempoAviso = millis();
       lcd.clear();
       if (gps.location.isValid()) {
         lcd.printf("Lat: %.5f", gps.location.lat());
@@ -137,7 +154,7 @@ void loop() {
     }
   }
 
-  // MQTT: tenta reconectar a cada 5 s se caiu e mantém a conexão ativa
+  //Tenta reconectar a cada 5s se caiu e mantém a conexão ativa
   static unsigned long tentativa = 0;
   if (!mqtt.connected() && millis() - tentativa > 5000) {
     tentativa = millis();
@@ -145,13 +162,12 @@ void loop() {
   }
   mqtt.loop();
 
-  // Envio periódico: bpm, temperatura e posição do GPS
+  //Envio periódico: bpm, temperatura e posição do GPS
   static unsigned long ultimoEnvio = 0;
   if (millis() - ultimoEnvio > INTERVALO_MQTT) {
     ultimoEnvio = millis();
     mqtt.publish(TOPICO "/bpm", String(bpm).c_str());
     mqtt.publish(TOPICO "/temperatura", String(dht.readTemperature(), 1).c_str());
-    mqtt.publish(TOPICO "/gps", gps.location.isValid() ?
-                 (String(gps.location.lat(), 6) + "," + String(gps.location.lng(), 6)).c_str() : "sem sinal");
+    mqtt.publish(TOPICO "/gps", gps.location.isValid() ? (String(gps.location.lat(), 6) + "," + String(gps.location.lng(), 6)).c_str() : "sem sinal");
   }
 }
