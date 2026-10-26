@@ -11,8 +11,8 @@
 //                          Defines                             //
 //==============================================================//
 
-#define WIFI_SSID      "Netvirtua801"                                       //Nome da rede
-#define WIFI_SENHA     "pingoebombom"                                       //Senha da rede
+#define WIFI_SSID      ""                                                   //Nome da rede
+#define WIFI_SENHA     ""                                                   //Senha da rede
 #define MQTT_BROKER    "broker.emqx.io"
 #define MQTT_ID        "AS_ESP32"                                           //AS de Artur e Sofia
 #define TOPICO         "AS_Topicos"                                         //Se quiser colocar um S a mais pra ficar ASS, pode colocar
