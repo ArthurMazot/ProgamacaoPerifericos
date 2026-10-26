@@ -4,18 +4,22 @@
 #include <TinyGPS++.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 
 //==============================================================//
 //                          Defines                             //
 //==============================================================//
 
-#define WIFI_SSID      ""               //Nome da rede
-#define WIFI_SENHA     ""               //Senha da rede
+#define WIFI_SSID      "Netvirtua801"                                       //Nome da rede
+#define WIFI_SENHA     "pingoebombom"                                       //Senha da rede
 #define MQTT_BROKER    "broker.emqx.io"
-#define MQTT_ID        "AS_ESP32"       //AS de Artur e Sofia
-#define TOPICO         "AS_Topicos"     //Se quiser colocar um S a mais pra ficar ASS, pode colocar
-#define INTERVALO_MQTT 5000             //Tempo de publicação no broker
-#define TEMPO_AVISO    5000             //Tempo que o aviso fica no LCD
+#define MQTT_ID        "AS_ESP32"                                           //AS de Artur e Sofia
+#define TOPICO         "AS_Topicos"                                         //Se quiser colocar um S a mais pra ficar ASS, pode colocar
+#define TELEGRAM_TOKEN "8890845312:AAEbZkFloXGsfQHHsYlCVUqlaOc-JHIR9TY"     //token do bot
+#define TELEGRAM_CHAT  "8839309674"                                         //id do chat
+#define INTERVALO_MQTT 5000                                                 //Tempo entre publicações no broker
+#define TEMPO_AVISO    5000                                                 //Tempo que o aviso fica no LCD
 
 #define LCD_RS          1
 #define LCD_E           3
@@ -41,37 +45,46 @@ TinyGPSPlus gps;
 WiFiClient wifi;
 PubSubClient mqtt(wifi);
 
-volatile unsigned long ultima = 0;    //Micros() da última batida
-volatile unsigned long periodo = 0;   //Tempo entre as duas últimas batidas (us)
+volatile unsigned long ultima = 0;      //Micros() da última batida
+volatile unsigned long periodo = 0;     //Tempo entre as duas últimas batidas (us)
 int bpm = 0;
-int estado = 0;                       //0 = normal, 1 = bradicardia, 2 = taquicardia, 3 = sem pulso
+int estado = 0;                         //0 = normal, 1 = bradicardia, 2 = taquicardia, 3 = sem pulso
 const char *nomes[] = {"NORMAL", "BRADICARDIA", "TAQUICARDIA", "SEM PULSO"};
-unsigned long tempoAviso = 0;            //Tempo em que o aviso está na tela
+unsigned long tempoAviso = 0;           //Tempo em que o aviso está na tela
 
-//==============================================================//
-//                          Funções                             //
-//==============================================================//
-
-void IRAM_ATTR batida(){ //Função que é chamada pela a interrupção
+void IRAM_ATTR batida() { //Função que é chamada pela a interrupção
   unsigned long agora = micros();
   if (ultima) periodo = agora - ultima;
   ultima = agora;
 }
 
-void buzzerBip(int t){ //Ativa um ciclo do buzzer
+void buzzerBip(int t) { //Ativa um ciclo do buzzer
   digitalWrite(BUZZER, HIGH);
   delay(t);
   digitalWrite(BUZZER, LOW);
   delay(t);
 }
 
-void evento(const char *nome, int bip){ //Publica o evento no broker, mostra no LCD e ativa o buzzer
+void telegram(const char *nome) { //Manda o evento e a posição do GPS para o bot do Telegram
+  String url = String("https://api.telegram.org/bot" TELEGRAM_TOKEN "/sendMessage?chat_id=" TELEGRAM_CHAT "&text=") + nome + "%0A";
+  if (gps.location.isValid()) url += String(gps.location.lat(), 6) + "," + String(gps.location.lng(), 6);
+  else url += "GPS sem sinal";
+  url.replace(" ", "+");
+  WiFiClientSecure https;
+  https.setInsecure();   //Não confere o certificado do Telegram
+  HTTPClient http;
+  http.begin(https, url);
+  http.GET();
+  http.end();
+}
+
+void evento(const char *nome) { //Publica o evento no broker e mostra no LCD
   mqtt.publish(TOPICO "/evento", nome);
   lcd.clear();
   lcd.print("EVENTO:");
   lcd.setCursor(0, 1);
   lcd.print(nome);
-  buzzerBip(bip);
+  telegram(nome);
   tempoAviso = millis();
 }
 
@@ -91,11 +104,10 @@ void setup() {
   //DHT22
   dht.begin();
 
-  //Sinal dos batimentos (pull-down: pino solto = sem pulso)
-  pinMode(SINAL_BATIMENTO, INPUT_PULLDOWN);
-
   //Define o pino que gera a interrupção, a função "batida" é chamada toda vez que o pino detectar um "RISING"
+  pinMode(SINAL_BATIMENTO, INPUT_PULLDOWN);
   attachInterrupt(digitalPinToInterrupt(SINAL_BATIMENTO), batida, RISING);
+
   //GPS
   Serial1.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
 
@@ -103,10 +115,7 @@ void setup() {
   lcd.print("Conectando WiFi");
   WiFi.begin(WIFI_SSID, WIFI_SENHA);
   while (WiFi.status() != WL_CONNECTED) delay(500);
-
-  //MQTT
   mqtt.setServer(MQTT_BROKER, 1883);
-
   lcd.clear();
   lcd.print("Monitor ativo");
 }
@@ -117,20 +126,29 @@ void setup() {
 
 void loop() {
   //Batimentos abaixo de 20 bpm ou 3s sem batida = sem pulso (bpm 0)
-  bpm = periodo ? round(60000000.0 / periodo) : 0;  //Periodo em us: 60s / periodo = bpm
+  bpm = periodo ? round(60000000.0 / periodo) : 0;   // periodo em us: 60 s / periodo = bpm
   if (bpm < 20 || micros() - ultima > 3000000UL) bpm = 0;
   estado = bpm == 0 ? 3 : bpm < 60 ? 1 : bpm > 100 ? 2 : 0;
 
   //Evento de batimento ao entrar em bradicardia, taquicardia ou sem pulso
-  static int estadoAnterior = 3;   //Começa em "sem pulso" para não avisar ao ligar
-  if (estado != estadoAnterior) {
+  static int estadoAnterior = 3;  //Começa em "sem pulso" para não avisar ao ligar
+  if (estado != estadoAnterior) { //Toda vez que muda para um estado diferente de "sem puslo", publica no broquer, telegram e ativa o buzzer
     estadoAnterior = estado;
-    if (estado) evento(nomes[estado], 200);
+    if (estado) {
+      buzzerBip(200);
+      evento(nomes[estado]);
+    }
   }
 
-  //Botões
-  if (!digitalRead(BOTAO_QUEDA)) evento("QUEDA", 100);
-  if (!digitalRead(BOTAO_PANICO)) evento("PANICO", 300);
+  //Botões e buzzer
+  if (!digitalRead(BOTAO_QUEDA)) {
+    buzzerBip(300);
+    evento("QUEDA");
+  }
+  if (!digitalRead(BOTAO_PANICO)){
+    buzzerBip(100);
+    evento("PANICO");
+  }
 
   //Lê do GPS todos os bytes disponiveis
   while (Serial1.available()) gps.encode(Serial1.read());
@@ -154,7 +172,7 @@ void loop() {
     }
   }
 
-  //Tenta reconectar a cada 5s se caiu e mantém a conexão ativa
+  //Tenta reconectar a cada 5s se caiu e/ou mantém a conexão ativa
   static unsigned long tentativa = 0;
   if (!mqtt.connected() && millis() - tentativa > 5000) {
     tentativa = millis();
