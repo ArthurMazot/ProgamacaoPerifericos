@@ -11,29 +11,30 @@
 //                          Defines                             //
 //==============================================================//
 
-#define WIFI_SSID      ""                                                   //Nome da rede
-#define WIFI_SENHA     ""                                                   //Senha da rede
+#define WIFI_SSID      "teste"                                       //Nome da rede
+#define WIFI_SENHA     "12345678"                                       //Senha da rede
 #define MQTT_BROKER    "broker.emqx.io"
 #define MQTT_ID        "AS_ESP32"                                           //AS de Artur e Sofia
 #define TOPICO         "AS_Topicos"                                         //Se quiser colocar um S a mais pra ficar ASS, pode colocar
 #define TELEGRAM_TOKEN "8890845312:AAEbZkFloXGsfQHHsYlCVUqlaOc-JHIR9TY"     //token do bot
 #define TELEGRAM_CHAT  "8839309674"                                         //id do chat
-#define INTERVALO_MQTT 5000                                                 //Tempo entre publicações no broker
-#define TEMPO_AVISO    5000                                                 //Tempo que o aviso fica no LCD
+#define INTERVALO_MQTT 10000                                                //Tempo entre publicações no broker
+#define TEMPO_AVISO    2000                                                 //Tempo que o aviso fica no LCD
 
-#define LCD_RS          1
-#define LCD_E           3
-#define LCD_D4          4
-#define LCD_D5          5
-#define LCD_D6          6
-#define LCD_D7          7
-#define BOTAO_QUEDA     8
-#define BOTAO_PANICO    9
-#define DHT_DADOS       2
-#define BUZZER          0
-#define SINAL_BATIMENTO 10
-#define GPS_RX          20
-#define GPS_TX          21
+//Pinos da ESP32 DevKit (evitados: 0, 2, 5, 12, 15 = strapping; 1 e 3 = USB/serial; 6 a 11 = flash)
+#define LCD_RS          32
+#define LCD_E           13
+#define LCD_D4          33
+#define LCD_D5          25
+#define LCD_D6          26
+#define LCD_D7          27
+#define BOTAO_QUEDA     22
+#define BOTAO_PANICO    23
+#define DHT_DADOS       19
+#define BUZZER          21
+#define SINAL_BATIMENTO 18              //Precisa de pulldown interno, então não pode ser 34 a 39
+#define GPS_RX          16              //RX2 da UART2 (liga no TX do GPS)
+#define GPS_TX          17              //TX2 da UART2 (liga no RX do GPS)
 
 //==============================================================//
 //                      Variaveis globais                       //
@@ -50,15 +51,16 @@ volatile unsigned long periodo = 0;     //Tempo entre as duas últimas batidas (
 int bpm = 0;
 int estado = 0;                         //0 = normal, 1 = bradicardia, 2 = taquicardia, 3 = sem pulso
 const char *nomes[] = {"NORMAL", "BRADICARDIA", "TAQUICARDIA", "SEM PULSO"};
-unsigned long tempoAviso = 0;           //Tempo em que o aviso está na tela
+unsigned long tempoAviso = 0;           //Tempo em que o evento apareceu na linha de baixo do LCD (0 = nenhum)
+bool gpsTela = false;                   //true enquanto a tela do GPS está no LCD
 
-void IRAM_ATTR batida() { //Função que é chamada pela a interrupção
+void IRAM_ATTR batida() { //Função que é chamada pela interrupção
   unsigned long agora = micros();
   if (ultima) periodo = agora - ultima;
   ultima = agora;
 }
 
-void buzzerBip(int t) { //Ativa um ciclo do buzzer
+void buzzerBip(int t) {
   digitalWrite(BUZZER, HIGH);
   delay(t);
   digitalWrite(BUZZER, LOW);
@@ -80,10 +82,9 @@ void telegram(const char *nome) { //Manda o evento e a posição do GPS para o b
 
 void evento(const char *nome) { //Publica o evento no broker e mostra no LCD
   mqtt.publish(TOPICO "/evento", nome);
-  lcd.clear();
-  lcd.print("EVENTO:");
+  gpsTela = false;               //Se a tela do GPS estava aberta, volta para BPM + evento
   lcd.setCursor(0, 1);
-  lcd.print(nome);
+  lcd.printf("%-16s", nome);     //Evento só na linha de baixo, a linha do BPM continua
   telegram(nome);
   tempoAviso = millis();
 }
@@ -108,8 +109,8 @@ void setup() {
   pinMode(SINAL_BATIMENTO, INPUT_PULLDOWN);
   attachInterrupt(digitalPinToInterrupt(SINAL_BATIMENTO), batida, RISING);
 
-  //GPS
-  Serial1.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
+  //GPS (UART2, pinos 16 e 17)
+  Serial2.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
 
   //WiFi (espera conectar) e broker MQTT
   lcd.print("Conectando WiFi");
@@ -151,22 +152,26 @@ void loop() {
   }
 
   //Lê do GPS todos os bytes disponiveis
-  while (Serial1.available()) gps.encode(Serial1.read());
+  while (Serial2.available()) gps.encode(Serial2.read());
 
-  //Eventos e GPS ficam TEMPO_AVISO no LCD, no resto do tempo mostra o bpm
+  //Linha de cima: sempre o bpm. Linha de baixo: o evento por TEMPO_AVISO e depois o estado.
+  //A cada 60s o GPS ocupa as duas linhas por TEMPO_AVISO
   static unsigned long ultimoGps = 0;
-  if (millis() - tempoAviso > TEMPO_AVISO) {
-    if (millis() - ultimoGps > 60000) {
-      ultimoGps = tempoAviso = millis();
-      lcd.clear();
-      if (gps.location.isValid()) {
-        lcd.printf("Lat: %.5f", gps.location.lat());
-        lcd.setCursor(0, 1);
-        lcd.printf("Lon: %.5f", gps.location.lng());
-      } else lcd.print("GPS sem sinal");
-    } else {
-      lcd.setCursor(0, 0);
-      lcd.printf("BPM: %-11d", bpm);
+  if (!gpsTela && millis() - ultimoGps > 60000) {
+    gpsTela = true;
+    ultimoGps = millis();
+    lcd.clear();
+    if (gps.location.isValid()) {
+      lcd.printf("Lat: %.5f", gps.location.lat());
+      lcd.setCursor(0, 1);
+      lcd.printf("Lon: %.5f", gps.location.lng());
+    } else lcd.print("GPS sem sinal");
+  } else if (gpsTela && millis() - ultimoGps > TEMPO_AVISO) gpsTela = false;
+
+  if (!gpsTela) {
+    lcd.setCursor(0, 0);
+    lcd.printf("BPM: %-11d", bpm);
+    if (!tempoAviso || millis() - tempoAviso > TEMPO_AVISO) {
       lcd.setCursor(0, 1);
       lcd.printf("%-16s", nomes[estado]);
     }
