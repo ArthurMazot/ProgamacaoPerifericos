@@ -1,0 +1,52 @@
+#include <Arduino.h>
+
+
+
+// PINOS DO JOYSTICK -> foram os pinos que eu usei no esp32-C3 super mini, 
+// mas podemos usar outros ja que vai ser em outro esp32.
+// pras entradas analogicas precisam ser pinos ADC, enquanto que pro botao tem que
+// ser uma entrada digital, com pull-up
+
+const byte xAxisPin = 34;   // VRx: eixo X (entrada analogica)
+const byte yAxisPin = 35;   // VRy: eixo Y (entrada analogica)
+const byte buttonPin = 32;  // SW: botao (entrada digital)
+
+// ESTRUTURA DOS DADOS
+// guarda os valores dos dois eixos e o estado do botao
+struct DadosJoystick {
+    int x;
+    int y;
+    bool pressionado;
+};
+
+// CONFIGURACAO DO JOYSTICK
+// chama uma vez durante o setup() -> funcao que eu fiz para pegar todos os valores
+// quen teriam que ser puxados pro trabalho anterior, podemos colocar isso onde
+// acharem melhor
+void iniciarJoystick() {
+
+    // configura o botao com pull-up interno
+    // HIGH = solto, LOW = pressionado
+    pinMode(buttonPin, INPUT_PULLUP);
+
+    // configura o ADC para leitura dos eixos analogicos
+    analogSetPinAttenuation(xAxisPin, ADC_11db);
+    analogSetPinAttenuation(yAxisPin, ADC_11db);
+}
+
+// LEITURA DO JOYSTICK
+// retorna os valores X, Y e o estado do botao
+DadosJoystick lerJoystick() {
+
+    DadosJoystick dados;
+
+    // le os eixos analogicos (0 a 4095)
+    dados.x = analogRead(xAxisPin);
+    dados.y = analogRead(yAxisPin);
+
+    // le o botao
+    // LOW significa que o botao esta pressionado
+    dados.pressionado = (digitalRead(buttonPin) == LOW);
+
+    return dados;
+}
